@@ -28,64 +28,42 @@ use std::{collections::VecDeque, future::Future, sync::Arc};
 
 use async_trait::async_trait;
 use criterion::{
-    criterion_group, criterion_main, measurement::WallTime, BenchmarkGroup, Criterion,
+    criterion_group, criterion_main, measurement::WallTime, BenchmarkGroup, BenchmarkId, Criterion,
 };
 use tokio::runtime::Runtime;
 
 fn criterion_benchmark(c: &mut Criterion) {
+    let mut group = c.benchmark_group("AsyncLock-Mutex");
+    benchmark_lock::<async_lock::Mutex<()>, _, _>(&mut group, "lock", lock);
+    benchmark_lock::<async_lock::Mutex<()>, _, _>(&mut group, "try_lock", try_lock);
+    group.finish();
+
+    let mut group = c.benchmark_group("AsyncLock-RwLock");
+    benchmark_lock::<async_lock::RwLock<()>, _, _>(&mut group, "lock", lock);
+    benchmark_lock::<async_lock::RwLock<()>, _, _>(&mut group, "try_lock", try_lock);
+    group.finish();
+
+    let mut group = c.benchmark_group("tokio-Mutex");
+    benchmark_lock::<tokio::sync::Mutex<()>, _, _>(&mut group, "lock", lock);
+    benchmark_lock::<tokio::sync::Mutex<()>, _, _>(&mut group, "try_lock", try_lock);
+    group.finish();
+
+    let mut group = c.benchmark_group("tokio-RwLock");
+    benchmark_lock::<tokio::sync::RwLock<()>, _, _>(&mut group, "lock", lock);
+    benchmark_lock::<tokio::sync::RwLock<()>, _, _>(&mut group, "try_lock", try_lock);
+    group.finish();
+}
+
+fn benchmark_lock<L: Lockable, Bench: Fn(Arc<L>) -> F, F: Future<Output = ()>>(
+    group: &mut BenchmarkGroup<WallTime>,
+    name: &str,
+    bench: Bench,
+) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
 
-    // First set of benchmarks tests inserting documents
-    let mut group = c.benchmark_group("Mutex");
-
-    lock_bench::<async_lock::Mutex<()>, _, _>(&runtime, &mut group, "lock", lock);
-    lock_bench::<async_lock::Mutex<()>, _, _>(&runtime, &mut group, "try_lock", try_lock);
-
-    lock_bench::<tokio::sync::Mutex<()>, _, _>(&runtime, &mut group, "lock", lock);
-    lock_bench::<tokio::sync::Mutex<()>, _, _>(&runtime, &mut group, "try_lock", try_lock);
-
-    for contention in [2_u32, 3, 5, 10, 50, 100] {
-        lock_contention_bench::<async_lock::Mutex<()>, _, _>(
-            &runtime, &mut group, contention, "lock", lock,
-        );
-        lock_contention_bench::<async_lock::Mutex<()>, _, _>(
-            &runtime, &mut group, contention, "try_lock", try_lock,
-        );
-        lock_contention_bench::<tokio::sync::Mutex<()>, _, _>(
-            &runtime, &mut group, contention, "lock", lock,
-        );
-        lock_contention_bench::<tokio::sync::Mutex<()>, _, _>(
-            &runtime, &mut group, contention, "try_lock", try_lock,
-        );
+    for contention in [0_u32, 1, 2, 3, 5, 10, 25, 50, 100] {
+        lock_contention_bench::<L, Bench, F>(&runtime, group, contention, name, &bench);
     }
-
-    group.finish();
-
-    // First set of benchmarks tests inserting documents
-    let mut group = c.benchmark_group("RwLock");
-
-    lock_bench::<async_lock::RwLock<()>, _, _>(&runtime, &mut group, "lock", lock);
-    lock_bench::<async_lock::RwLock<()>, _, _>(&runtime, &mut group, "try_lock", try_lock);
-
-    lock_bench::<tokio::sync::RwLock<()>, _, _>(&runtime, &mut group, "lock", lock);
-    lock_bench::<tokio::sync::RwLock<()>, _, _>(&runtime, &mut group, "try_lock", try_lock);
-
-    for contention in [2_u32, 3, 5, 10, 50, 100] {
-        lock_contention_bench::<async_lock::RwLock<()>, _, _>(
-            &runtime, &mut group, contention, "lock", lock,
-        );
-        lock_contention_bench::<async_lock::RwLock<()>, _, _>(
-            &runtime, &mut group, contention, "try_lock", try_lock,
-        );
-        lock_contention_bench::<tokio::sync::RwLock<()>, _, _>(
-            &runtime, &mut group, contention, "lock", lock,
-        );
-        lock_contention_bench::<tokio::sync::RwLock<()>, _, _>(
-            &runtime, &mut group, contention, "try_lock", try_lock,
-        );
-    }
-
-    group.finish();
 }
 
 criterion_group!(benches, criterion_benchmark);
@@ -103,6 +81,43 @@ fn spawn_stoppable_task<
     runtime.spawn(task(receiver));
 
     sender
+}
+
+fn lock_contention_bench<L: Lockable, Bench: Fn(Arc<L>) -> F, F: Future<Output = ()>>(
+    runtime: &Runtime,
+    group: &mut BenchmarkGroup<WallTime>,
+    contention: u32,
+    name: &str,
+    bench: &Bench,
+) {
+    let contention_percent = if contention > 0 { 100 / contention } else { 0 };
+    group.bench_with_input(
+        BenchmarkId::from_parameter(format!("{}-{:02}", name, contention_percent)),
+        &contention,
+        |b, _| {
+            let mut mutexes = VecDeque::new();
+            for _ in 0_u32..contention.max(1) {
+                mutexes.push_back(Arc::new(L::new()));
+            }
+            let stop = spawn_stoppable_task(runtime, |stop| {
+                let mut mutexes = mutexes.clone();
+                async move {
+                    if contention > 0 {
+                        while stop.try_recv().is_err() {
+                            let mutex = mutexes.pop_front().unwrap();
+                            mutex.lock().await;
+                            mutexes.push_back(mutex);
+                        }
+                    }
+                }
+            });
+            b.to_async(runtime).iter(|| {
+                let lock = mutexes[0].clone();
+                bench(lock)
+            });
+            let _ = stop.send(());
+        },
+    );
 }
 
 #[derive(Debug)]
@@ -196,53 +211,4 @@ async fn try_lock<L: Lockable>(lock: Arc<L>) {
     if !lock.try_lock() {
         lock.lock().await;
     }
-}
-
-fn lock_contention_bench<L: Lockable, Bench: Fn(Arc<L>) -> F, F: Future<Output = ()>>(
-    runtime: &Runtime,
-    group: &mut BenchmarkGroup<WallTime>,
-    contention: u32,
-    name: &str,
-    bench: Bench,
-) {
-    let contention_percent = 100 / contention;
-    group.bench_function(
-        format!("{:?}-{}-c{:02}", L::BACKEND, name, contention_percent),
-        |b| {
-            let mut mutexes = VecDeque::new();
-            for _ in 0_u32..contention {
-                mutexes.push_back(Arc::new(L::new()));
-            }
-            let stop = spawn_stoppable_task(runtime, |stop| {
-                let mut mutexes = mutexes.clone();
-                async move {
-                    while stop.try_recv().is_err() {
-                        let mutex = mutexes.pop_front().unwrap();
-                        mutex.lock().await;
-                        mutexes.push_back(mutex);
-                    }
-                }
-            });
-            b.to_async(runtime).iter(|| {
-                let lock = mutexes[0].clone();
-                bench(lock)
-            });
-            stop.send(()).unwrap();
-        },
-    );
-}
-
-fn lock_bench<L: Lockable, Bench: Fn(Arc<L>) -> F, F: Future<Output = ()>>(
-    runtime: &Runtime,
-    group: &mut BenchmarkGroup<WallTime>,
-    name: &str,
-    bench: Bench,
-) {
-    group.bench_function(format!("{:?}-{}", L::BACKEND, name), |b| {
-        let mutex = Arc::new(L::new());
-        b.to_async(runtime).iter(|| {
-            let mutex = mutex.clone();
-            bench(mutex)
-        });
-    });
 }
