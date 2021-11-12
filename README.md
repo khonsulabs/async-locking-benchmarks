@@ -21,7 +21,7 @@ let locked = if let Ok(locked) = some_async_mutex.try_lock() {
 > These results do not test every situation that locks can find themselves in.
 > Always benchmark your own code rather than relying solelyh on third party
 > benchmarks.
-> 
+>
 > [`async-lock`](https://github.com/smol-rs/async-lock) wins in these benchmarks
 > in all categories. However, this is almost certainly due to a difference in
 > fairness aglorithms between the different implementations.
@@ -32,7 +32,7 @@ Here's two summary graphs that try to show the relative differences:
 
 [![Mutex Chart](https://sheet.zoho.com/sheet/publicgraphs/01d89fce6ac941b59cf4423561b27fea1636691426323267.png)](https://sheet.zoho.com/sheet/publicgraphs/01d89fce6ac941b59cf4423561b27fea1636691426323267)
 
-[![RwLock Chart](https://sheet.zoho.com/sheet/publicgraphs/a53d0f1196b541f4a12650cafbfc72ad1636690839752836.png)](https://sheet.zoho.com/sheet/publicgraphs/ac1d556414e54cf4affb3b45c9d8a0651636690443908995)
+[![RwLock Chart](https://sheet.zoho.com/sheet/publicgraphs/a53d0f1196b541f4a12650cafbfc72ad1636690839752836.png)](https://sheet.zoho.com/sheet/publicgraphs/a53d0f1196b541f4a12650cafbfc72ad1636690839752836)
 
 **Note: the vertical axis is plotted on a logarithmic scale.** This choice was made to make the relative differences at each datapoint more visible. [Full Criterion report available here.](https://khonsulabs.github.io/async-locking-benchmarks/report/)
 
