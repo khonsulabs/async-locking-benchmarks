@@ -1,0 +1,21 @@
+[package]
+name = "async-locking-benchmarks"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+criterion = { version = "0.3", features = ["async_tokio", "html_reports"] }
+tokio = { version = "1", features = ["full"] }
+async-lock = "2"
+flume = "0.10"
+async-trait = "0.1"
+
+[[bench]]
+name = "locks"
+harness = false
+
+[profile.bench]
+lto = true
+codegen-units = 1
